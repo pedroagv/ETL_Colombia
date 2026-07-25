@@ -38,7 +38,7 @@ def main():
 
     if args.download_only:
         run_phase_1(args.limit_months)
-    elif args.sql-only:
+    elif args.sql_only:
         run_phase_2(args.limit_files)
     else:
         if run_phase_1(args.limit_months):

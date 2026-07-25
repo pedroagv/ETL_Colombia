@@ -344,7 +344,8 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
     if limit_files:
         zip_files = zip_files[:limit_files]
 
-    table_name = file_type.lower()  # 'importaciones' o 'exportaciones'
+    table_names = {"importaciones": "importacion", "exportaciones": "exportacion"}
+    table_name = table_names.get(file_type.lower(), file_type.lower())
     logger.info(f"Encontrados {len(zip_files)} archivos ZIP para procesar en '{source_dir}' -> Tabla MySQL: '{table_name}'.")
 
     for zip_path in zip_files:

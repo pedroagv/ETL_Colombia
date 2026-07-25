@@ -149,7 +149,7 @@ def run_download_process(limit_months=None):
     # Configuración de los tipos de descarga
     download_types = [
         {
-            "key": "importaciones",
+            "key": "}",
             "cap": "Importaciones",
             "dir": IMPO_DIR,
             "url_pattern": "https://www.dian.gov.co/dian/cifras/Basesestadisticasimportaciones/{month_num}_Importaciones_{year}_{month_name}.zip"
