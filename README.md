@@ -5,7 +5,7 @@ Proceso ETL en dos fases que descarga las estadísticas mensuales de importacion
 ## Fases
 
 - **Fase 1 — Descarga** ([01_fase_descarga.py](01_fase_descarga.py)): descarga los ZIP mensuales de la DIAN desde `START_YEAR` hasta la fecha, evitando redescargas mediante un registro en SQLite ([database.py](database.py)). Soporta modo `--daemon` para repetirse cada `RUN_INTERVAL_DAYS`.
-- **Fase 2 — Procesamiento SQL** ([02_fase_sql.py](02_fase_sql.py)): procesa dinámicamente los ZIP descargados (Excel/CSV), crea las tablas necesarias en MySQL e inserta los datos por lotes.
+- **Fase 2 — Procesamiento SQL** ([02_fase_sql.py](02_fase_sql.py)): procesa dinámicamente los ZIP descargados (Excel/CSV), crea las tablas necesarias (`temporal_impo` y `temporal_expo`) en MySQL e inserta los datos por lotes.
 - **Orquestador** ([main.py](main.py)): ejecuta ambas fases en orden, o cada una por separado.
 
 ## Requisitos

@@ -1,0 +1,18 @@
+[Unit]
+Description=Servicio ETL Colombia DIAN (Descarga Mensual y Carga a MySQL)
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=pedro-ubuntu
+Group=pedro-ubuntu
+WorkingDirectory=/home/pedro-ubuntu/proyectos/ETL_Colombia
+ExecStart=/home/pedro-ubuntu/proyectos/ETL_Colombia/venv/bin/python main.py --loop-hours 24
+Restart=always
+RestartSec=15
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

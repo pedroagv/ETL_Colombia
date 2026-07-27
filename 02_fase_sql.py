@@ -129,6 +129,7 @@ class MySQLManager:
         self.password = MYSQL_PASSWORD
         self.db_name = MYSQL_DATABASE
         self._ensure_database_exists()
+        self._rename_legacy_tables()
 
     def get_connection(self, select_db=True):
         return pymysql.connect(
@@ -156,6 +157,36 @@ class MySQLManager:
         except Exception as e:
             logger.error(f"Error al verificar/crear la base de datos '{self.db_name}': {e}")
             raise e
+
+    def _rename_legacy_tables(self):
+        """
+        Renombra tablas de Colombia previamente existentes (e.g. importacion, exportacion,
+        colombia_impo, colombia_expo, impo, expo) a 'temporal_impo' y 'temporal_expo'.
+        """
+        legacy_mappings = {
+            "temporal_impo": ["importacion", "colombia_impo", "impo", "colombia_importacion"],
+            "temporal_expo": ["exportacion", "colombia_expo", "expo", "colombia_exportacion"],
+        }
+        try:
+            conn = self.get_connection()
+            with conn.cursor() as cursor:
+                cursor.execute("SHOW TABLES;")
+                existing_tables = set(row[0] for row in cursor.fetchall())
+
+                for target_table, legacy_names in legacy_mappings.items():
+                    if target_table in existing_tables:
+                        continue
+                    for old_name in legacy_names:
+                        if old_name in existing_tables:
+                            logger.info(f"Renombrando tabla MySQL legacy '{old_name}' -> '{target_table}'...")
+                            cursor.execute(f"RENAME TABLE `{old_name}` TO `{target_table}`;")
+                            conn.commit()
+                            existing_tables.remove(old_name)
+                            existing_tables.add(target_table)
+                            break
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Advertencia al verificar/renombrar tablas legacy en MySQL: {e}")
 
     def get_existing_columns(self, table_name: str) -> dict:
         """
@@ -214,6 +245,40 @@ class MySQLManager:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error sincronizando esquema para la tabla '{table_name}': {e}")
+            raise e
+        finally:
+            conn.close()
+
+    def delete_records_by_file(self, table_name: str, filename: str) -> int:
+        """
+        Elimina registros previos en MySQL que coincidan con archivo_origen o nombre_archivo
+        para garantizar la idempotencia antes de volver a insertar.
+        """
+        existing_cols = self.get_existing_columns(table_name)
+        if not existing_cols:
+            return 0
+
+        target_col = None
+        if "archivo_origen" in existing_cols:
+            target_col = "archivo_origen"
+        elif "nombre_archivo" in existing_cols:
+            target_col = "nombre_archivo"
+
+        if not target_col:
+            return 0
+
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                sql = f"DELETE FROM `{table_name}` WHERE `{target_col}` = %s;"
+                deleted_rows = cursor.execute(sql, (filename,))
+                conn.commit()
+                if deleted_rows > 0:
+                    logger.info(f"Limpieza previa: Eliminados {deleted_rows} registros previos del archivo '{filename}' en '{table_name}'.")
+                return deleted_rows
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error limpiando registros previos de '{filename}' en '{table_name}': {e}")
             raise e
         finally:
             conn.close()
@@ -344,8 +409,13 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
     if limit_files:
         zip_files = zip_files[:limit_files]
 
-    table_names = {"importaciones": "importacion", "exportaciones": "exportacion"}
-    table_name = table_names.get(file_type.lower(), file_type.lower())
+    table_names = {
+        "importaciones": "temporal_impo",
+        "impo": "temporal_impo",
+        "exportaciones": "temporal_expo",
+        "expo": "temporal_expo"
+    }
+    table_name = table_names.get(file_type.lower(), f"temporal_{file_type.lower()}")
     logger.info(f"Encontrados {len(zip_files)} archivos ZIP para procesar en '{source_dir}' -> Tabla MySQL: '{table_name}'.")
 
     for zip_path in zip_files:
@@ -374,6 +444,9 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
 
             # 4. Sincronizar esquema de tabla en MySQL (crear o alterar tabla según columnas)
             db_manager.sync_table_schema(table_name, df)
+
+            # 4b. Eliminar registros previos de este archivo para garantizar idempotencia
+            db_manager.delete_records_by_file(table_name, filename)
 
             # 5. Insertar registros en MySQL
             rows_inserted = db_manager.insert_dataframe(table_name, df, batch_size=batch_size)
