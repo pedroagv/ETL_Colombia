@@ -17,6 +17,8 @@ START_YEAR = int(os.getenv("START_YEAR", "2018"))
 DB_PATH = os.getenv("DB_PATH", "dian_downloads.db")
 IMPO_DIR = os.path.expanduser(os.getenv("IMPO_DIR", "Descargas Impo"))
 EXPO_DIR = os.path.expanduser(os.getenv("EXPO_DIR", "Descargas Expo"))
+PROCESADOS_IMPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_IMPO_DIR", "Procesados/Importacion"))
+PROCESADOS_EXPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_EXPO_DIR", "Procesados/Exportacion"))
 RUN_INTERVAL_DAYS = int(os.getenv("RUN_INTERVAL_DAYS", "15"))
 REQUESTS_TIMEOUT = int(os.getenv("REQUESTS_TIMEOUT", "120"))
 LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -152,12 +154,14 @@ def run_download_process(limit_months=None):
             "key": "importaciones",
             "cap": "Importaciones",
             "dir": IMPO_DIR,
+            "processed_dir": PROCESADOS_IMPO_DIR,
             "url_pattern": "https://www.dian.gov.co/dian/cifras/Basesestadisticasimportaciones/{month_num}_Importaciones_{year}_{month_name}.zip"
         },
         {
             "key": "exportaciones",
             "cap": "Exportaciones",
             "dir": EXPO_DIR,
+            "processed_dir": PROCESADOS_EXPO_DIR,
             "url_pattern": "https://www.dian.gov.co/dian/cifras/Basesestadisticasexportaciones/{month_num}_Exportaciones_{year}_{month_name}.zip"
         }
     ]
@@ -171,11 +175,12 @@ def run_download_process(limit_months=None):
             )
             filename = f"{month_num}_{dt['cap']}_{year}_{month_name}.zip"
             dest_path = os.path.join(dt["dir"], filename)
-            
+            processed_path = os.path.join(dt["processed_dir"], filename)
+
             # Verificar si ya se encuentra en la base de datos de descargas exitosas
             if db.is_already_downloaded(url):
-                # Validamos que el archivo físico realmente exista (la integridad ya se comprobó al descargar)
-                if os.path.exists(dest_path):
+                # Validamos que el archivo físico exista, ya sea pendiente de procesar o ya movido a Procesados
+                if os.path.exists(dest_path) or os.path.exists(processed_path):
                     logger.debug(f"Omitido: {filename} ya descargado y verificado.")
                     summary["skipped"].append((dt["key"], year, month_name, filename))
                     continue

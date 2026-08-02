@@ -1,0 +1,315 @@
+{
+  "mappings": {
+    "properties": {
+      "id": {
+        "type": "integer"
+      },
+      "fecha_declaracion": {
+        "type": "date"
+      },
+      "anio": {
+        "type": "short"
+      },
+      "aduana_presentada": {
+        "type": "keyword"
+      },
+      "trimestre": {
+        "type": "byte"
+      },
+      "mes": {
+        "type": "byte"
+      },
+      "nombre_mes": {
+        "type": "keyword"
+      },
+      "anio_mes": {
+        "type": "keyword"
+      },
+      "pais_origen_nombre": {
+        "type": "keyword"
+      },
+      "tipo_declaracion": {
+        "type": "keyword"
+      },
+      "manifiesto_de_carga": {
+        "type": "keyword"
+      },
+      "documento_transporte": {
+        "type": "keyword"
+      },
+      "municipio": {
+        "type": "keyword"
+      },
+      "aduana_anterior": {
+        "type": "keyword"
+      },
+      "aduana_exportacion": {
+        "type": "keyword"
+      },
+      "importador": {
+        "type": "keyword"
+      },
+      "exportador": {
+        "type": "keyword"
+      },
+      "agente_aduanero": {
+        "type": "keyword"
+      },
+      "nit_importador": {
+        "type": "keyword"
+      },
+      "partida_arancelaria": {
+        "type": "keyword"
+      },
+      "capitulo": {
+        "type": "keyword"
+      },
+      "capitulo_nombre": {
+        "type": "keyword"
+      },
+      "unidad_medida": {
+        "type": "keyword"
+      },
+      "banco": {
+        "type": "keyword"
+      },
+      "regimen_aduanero": {
+        "type": "keyword"
+      },
+      "embalaje": {
+        "type": "keyword"
+      },
+      "acuerdo_comercial": {
+        "type": "keyword"
+      },
+      "pais_procedencia": {
+        "type": "keyword"
+      },
+      "entidad_intermedia": {
+        "type": "keyword"
+      },
+      "deposito": {
+        "type": "keyword"
+      },
+      "modo_transporte": {
+        "type": "keyword"
+      },
+      "actividad_economica": {
+        "type": "keyword"
+      },
+      "bandera_transporte": {
+        "type": "keyword"
+      },
+      "moneda": {
+        "type": "keyword"
+      },
+      "empresa_transportadora": {
+        "type": "keyword"
+      },
+      "tasa_cambio": {
+        "type": "double"
+      },
+      "departamento_destino": {
+        "type": "keyword"
+      },
+      "num_cuotas_o_meses": {
+        "type": "short"
+      },
+      "peso_neto": {
+        "type": "double"
+      },
+      "valor_fob_usd": {
+        "type": "double"
+      },
+      "pais_origen": {
+        "type": "keyword"
+      },
+      "peso_bruto": {
+        "type": "double"
+      },
+      "fletes_seguros1": {
+        "type": "double"
+      },
+      "valor_ajuste_usd": {
+        "type": "double"
+      },
+      "valor_aduana_usd": {
+        "type": "double"
+      },
+      "numero_bultos": {
+        "type": "double"
+      },
+      "cantidad_subpartidas": {
+        "type": "double"
+      },
+      "cantidad": {
+        "type": "double"
+      },
+      "descripcion_mercancia": {
+        "type": "text"
+      },
+      "porcentaje_arancel": {
+        "type": "double"
+      },
+      "base_arancel": {
+        "type": "double"
+      },
+      "total_liquidado_arancel": {
+        "type": "double"
+      },
+      "porcentaje_iva": {
+        "type": "double"
+      },
+      "base_iva": {
+        "type": "double"
+      },
+      "total_liquidado_iva": {
+        "type": "double"
+      },
+      "porcentaje_otros1": {
+        "type": "double"
+      },
+      "base_otros1": {
+        "type": "double"
+      },
+      "subtotal_otros1": {
+        "type": "double"
+      },
+      "total_item1": {
+        "type": "double"
+      },
+      "valor_total_arancel": {
+        "type": "double"
+      },
+      "valor_total_iva": {
+        "type": "double"
+      },
+      "valor_total_otros": {
+        "type": "double"
+      },
+      "total_liquidado_sancion": {
+        "type": "double"
+      },
+      "total_liquidado": {
+        "type": "double"
+      },
+      "pago_total": {
+        "type": "double"
+      },
+      "numero_formulario": {
+        "type": "keyword"
+      },
+      "valor_pagos_anteriores": {
+        "type": "double"
+      },
+      "clase_importador": {
+        "type": "keyword"
+      },
+      "departamento_importador": {
+        "type": "keyword"
+      },
+      "pais_exportador": {
+        "type": "keyword"
+      },
+      "forma_pago": {
+        "type": "keyword"
+      },
+      "fecha_carga_dw": {
+        "type": "date"
+      },
+      "tipo_importacion": {
+        "type": "keyword"
+      },
+      "pais_compra": {
+        "type": "keyword"
+      },
+      "total_a_pagar_arancel": {
+        "type": "double"
+      },
+      "total_a_pagar_iva": {
+        "type": "double"
+      },
+      "otros_pagados": {
+        "type": "double"
+      },
+      "total_a_pagar_sancion": {
+        "type": "double"
+      },
+      "num_aceptacion_declaracion": {
+        "type": "keyword"
+      },
+      "valor_cuota_usd": {
+        "type": "double"
+      },
+      "valor_seguros_usd": {
+        "type": "double"
+      },
+      "valor_fletes_usd": {
+        "type": "double"
+      },
+      "valor_otros_gastos_usd": {
+        "type": "double"
+      },
+      "numero_factura": {
+        "type": "keyword"
+      },
+      "porcentaje_sancion": {
+        "type": "double"
+      },
+      "base_sancion": {
+        "type": "double"
+      },
+      "valor_cif_usd": {
+        "type": "double"
+      },
+      "porcentaje_salvaguardia": {
+        "type": "double"
+      },
+      "base_salvaguardia": {
+        "type": "double"
+      },
+      "total_liquidado_salvaguardia": {
+        "type": "double"
+      },
+      "total_a_pagar_salvaguardia": {
+        "type": "double"
+      },
+      "porcentaje_derechos_comp": {
+        "type": "double"
+      },
+      "base_derechos_comp": {
+        "type": "double"
+      },
+      "total_liquidado_derechos_comp": {
+        "type": "double"
+      },
+      "total_a_pagar_derechos_comp": {
+        "type": "double"
+      },
+      "porcentaje_antidumping": {
+        "type": "double"
+      },
+      "base_antidumping": {
+        "type": "double"
+      },
+      "total_liquidado_antidumping": {
+        "type": "double"
+      },
+      "total_a_pagar_antidumping": {
+        "type": "double"
+      },
+      "porcentaje_rescate": {
+        "type": "double"
+      },
+      "base_rescate": {
+        "type": "double"
+      },
+      "total_liquidado_rescate": {
+        "type": "double"
+      },
+      "total_a_pagar_rescate": {
+        "type": "double"
+      }
+    }
+  }
+}

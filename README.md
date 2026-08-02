@@ -1,18 +1,37 @@
-# ETL Colombia — DIAN Importaciones/Exportaciones
+# ETL Colombia — Trade Intelligence Data Warehouse (DIAN Importaciones/Exportaciones)
 
-Proceso ETL en dos fases que descarga las estadísticas mensuales de importaciones y exportaciones publicadas por la DIAN, y las procesa e inserta en una base de datos MySQL.
+Pipeline de 6 fases que descarga las estadísticas mensuales de comercio
+exterior publicadas por la DIAN, construye un Data Warehouse dimensional en
+MySQL (reutilizando dimensiones compartidas con otros países del Data
+Warehouse) y deja los datos listos para búsqueda/reportes en Elasticsearch a
+través de la plataforma **TradeIntelligence**.
+
+Documentación completa (arquitectura, modelo dimensional, flujo ETL,
+Elasticsearch, metadata) en **[04_Documentacion/README.md](04_Documentacion/README.md)**.
 
 ## Fases
 
-- **Fase 1 — Descarga** ([01_fase_descarga.py](01_fase_descarga.py)): descarga los ZIP mensuales de la DIAN desde `START_YEAR` hasta la fecha, evitando redescargas mediante un registro en SQLite ([database.py](database.py)). Soporta modo `--daemon` para repetirse cada `RUN_INTERVAL_DAYS`.
-- **Fase 2 — Procesamiento SQL** ([02_fase_sql.py](02_fase_sql.py)): procesa dinámicamente los ZIP descargados (Excel/CSV), crea las tablas necesarias (`temporal_impo` y `temporal_expo`) en MySQL e inserta los datos por lotes.
-- **Orquestador** ([main.py](main.py)): ejecuta ambas fases en orden, o cada una por separado.
+| Fase | Script | Qué hace |
+|---|---|---|
+| 1 — Descarga | [02_Python/01_ETL_Descarga.py](02_Python/01_ETL_Descarga.py) | Descarga los ZIP mensuales de la DIAN desde `START_YEAR`, evitando redescargas (registro SQLite, [02_Python/database.py](02_Python/database.py)). |
+| 2 — Staging | [02_Python/02_ETL_SQL.py](02_Python/02_ETL_SQL.py) | Carga los ZIP por streaming/chunks hacia `temporal_impo`/`temporal_expo` (TEXT crudo, sin transformar). **Sin cambios de lógica.** |
+| 3 — Dimensiones | [02_Python/03_ETL_Dimensiones.py](02_Python/03_ETL_Dimensiones.py) | Puebla las dimensiones (base de datos compartida `Dimension`) por archivo pendiente. |
+| 4 — Hechos | [02_Python/04_ETL_Importaciones.py](02_Python/04_ETL_Importaciones.py) | Resuelve en memoria (diccionarios) e inserta directo, ya plano, en `colombia.importacion`. |
+| 5 — Metadata | [02_Python/05_ETL_Metadata.py](02_Python/05_ETL_Metadata.py) | Dispara la sincronización de metadata de TradeIntelligence + mejora labels/tipos. |
+| 6 — Elasticsearch | [02_Python/06_ETL_Elastic.py](02_Python/06_ETL_Elastic.py) | Dispara la indexación incremental de TradeIntelligence (sólo lo nuevo). |
+
+`main.py` orquesta todo: procesa **un archivo a la vez**, de punta a punta
+(dimensiones → hechos → índice), antes de pasar al siguiente.
 
 ## Requisitos
 
 - Python 3.12
-- MySQL en ejecución (ver `MYSQL_*` en `.env`)
-- Dependencias en [requirements.txt](requirements.txt): `requests`, `python-dotenv`, `pandas`, `openpyxl`, `pymysql`, `sqlalchemy`
+- MySQL 8 en ejecución, con las bases `colombia` (este proyecto),
+  `Dimension` (compartida) y, para las Fases 5-6, acceso a
+  `trade_intelligence` (ver `TRADE_INTELLIGENCE_DIR` más abajo)
+- Elasticsearch (para la Fase 6; opcional para el resto)
+- Dependencias en [requirements.txt](requirements.txt): `requests`,
+  `python-dotenv`, `pandas`, `openpyxl`, `pymysql`, `sqlalchemy`
 
 ## Configuración
 
@@ -24,10 +43,12 @@ Variables de entorno en `.env` (no versionado):
 | `DB_PATH` | Ruta de la base SQLite de control de descargas |
 | `IMPO_DIR` / `EXPO_DIR` | Carpetas de descarga de ZIPs |
 | `PROCESADOS_IMPO_DIR` / `PROCESADOS_EXPO_DIR` | Carpetas de archivos ya procesados |
-| `RUN_INTERVAL_DAYS` | Intervalo en días para el modo `--daemon` |
+| `RUN_INTERVAL_DAYS` | Intervalo en días para el modo `--daemon` de la Fase 1 |
 | `REQUESTS_TIMEOUT` | Timeout de las descargas HTTP (segundos) |
 | `LOG_LEVEL` | Nivel de logging |
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | Conexión a MySQL |
+| `DW_CHUNK_SIZE` | Tamaño de bloque para las Fases 3-4 (default 50000) |
+| `TRADE_INTELLIGENCE_DIR` / `TRADE_INTELLIGENCE_PYTHON` | Ruta y venv del proyecto TradeIntelligence, usados para disparar sus `manage.py` en las Fases 5-6 |
 
 ## Uso
 
@@ -35,38 +56,52 @@ Variables de entorno en `.env` (no versionado):
 # Instalar dependencias (dentro del venv)
 pip install -r requirements.txt
 
-# Ejecutar ambas fases
+# Bootstrap inicial de la base de datos (una sola vez; ver 01_SQL/)
+mysql < 01_SQL/01_Dimensiones.sql
+mysql < 01_SQL/02_Indices.sql
+mysql < 01_SQL/03_Insert_Dimensiones.sql   # backfill completo (idempotente)
+mysql < 01_SQL/04_Importaciones.sql
+mysql < 01_SQL/05_Vistas.sql
+mysql < 01_SQL/06_Procedimientos.sql
+
+# Ciclo completo (Fases 1-6, un archivo a la vez)
 python main.py
 
-# Solo descarga (con límite opcional de meses)
+# Solo descarga / solo staging (igual que antes)
 python main.py --download-only --limit-months 3
-
-# Solo procesamiento SQL (con límite opcional de archivos)
 python main.py --sql-only --limit-files 10
+
+# Solo Data Warehouse (Fases 3-4, sin descargar ni indexar)
+python main.py --dw-only
+
+# Solo metadata + indexación (Fases 5-6)
+python main.py --elastic-only
+
+# Modo demonio (ciclo completo cada N horas)
+python main.py --loop-hours 24
 ```
 
-## Estructura de datos
+## Estructura del proyecto
 
-- `Descargas/Importacion` y `Descargas/Exportacion`: ZIPs originales descargados de la DIAN.
-- `Procesados/Importacion` y `Procesados/Exportacion`: archivos ya procesados por la Fase 2.
-- `dian_downloads.db`: registro SQLite de descargas (evita duplicados).
-- `dian_downloader.log` / `dian_etl_sql.log`: logs de cada fase.
+```
+01_SQL/                  DDL y backfill de referencia (Dimension + colombia)
+02_Python/                Fases 1-6 + módulos comunes (ver 02_Python/common/)
+03_Elastic/               Snapshots de referencia de mapping/índices (no autoritativos)
+04_Documentacion/         Documentación completa (empezar por README.md ahí)
+Descargas/, Procesados/   ZIPs originales y ya procesados (Fase 1-2)
+main.py                   Orquestador (loop por archivo)
+```
 
 ## Servicios corriendo en WSL (Ubuntu, systemd)
 
-Detectados en el entorno WSL donde vive este proyecto (`systemctl list-units --type=service --state=running`):
+| Servicio | Relevancia para este proyecto |
+|---|---|
+| `mysql.service` | Bases `colombia`, `Dimension`, `trade_intelligence` |
+| `elasticsearch.service` | Destino final de la Fase 6 (vía TradeIntelligence) |
+| `orquestador_etl_union_europea.service` | Otro ETL (países UE) que comparte la base `Dimension` — proyecto distinto |
+| `nginx.service`, `ssh.service`, `cron.service` | Servicios base del sistema, no específicos de este proyecto |
 
-| Servicio | Estado | Relevancia para este proyecto |
-|---|---|---|
-| `mysql.service` | activo (puerto `3306`) | Base de datos destino de la Fase 2 (`MYSQL_HOST=localhost`) |
-| `elasticsearch.service` | activo (puertos `9200`/`9300`) | No usado por este proyecto |
-| `nginx.service` | activo | No usado por este proyecto |
-| `orquestador_etl_union_europea.service` | activo | Otro ETL (Eurostat, fases 3-7, cíclico) — proyecto distinto, no relacionado a este repo |
-| `ssh.service` | activo (puerto `22`) | Acceso remoto SSH |
-| `cron.service` | activo | Demonio de tareas programadas |
-| `unattended-upgrades.service` | activo | Actualizaciones automáticas del sistema |
-| `systemd-*`, `dbus`, `polkit`, `rsyslog`, `getty@tty1` | activos | Servicios base del sistema |
-
-Adicionalmente hay un proceso Django (`manage.py runserver`) escuchando en `127.0.0.1:8000`, correspondiente al proyecto `TradeIntelligence` (no a este repo).
-
-> Nota: **solo `mysql.service` es directamente relevante** para este proyecto, ya que la Fase 2 inserta los datos ahí. El resto son servicios del sistema o de otros proyectos presentes en la misma máquina WSL.
+El proyecto Django `TradeIntelligence` (otro repo, en
+`../TradeIntelligence`) es quien consume `colombia.importacion`: ver
+[04_Documentacion/Arquitectura.md](04_Documentacion/Arquitectura.md) para el
+contrato de integración completo.

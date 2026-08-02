@@ -1,0 +1,14 @@
+{
+  "_comentario": "Referencia/documentación, NO autoritativa. TradeIntelligence crea cada índice con `es_client.indices.create(index=nombre, body={\"mappings\": {...}})` (trade_data/elastic/indices.py::ensure_index) SIN bloque 'settings' explícito -- usa los valores por defecto del clúster. Este archivo muestra una configuración de 'settings' sugerida para producción a la escala de este proyecto (cientos de millones de documentos repartidos en índices anuales), pensada para aplicarse manualmente sólo si el volumen de un año puntual lo justifica; no es parte del flujo automático.",
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "index.refresh_interval": "30s",
+    "_comentario_shards": "1 shard alcanza hasta varias decenas de millones de documentos por índice anual; si un año supera con holgura los ~40-50M de documentos, subir number_of_shards antes de crear ese índice (no se puede cambiar después sin reindexar).",
+    "_comentario_refresh": "30s (en vez del default de 1s) reduce el costo de refresco durante cargas masivas por lotes como las de este ETL; TradeIntelligence no lo configura hoy, es una recomendación operativa."
+  },
+  "mappings": {
+    "_comentario": "Ver 01_Mapping.json para las properties reales vigentes (snapshot). La fuente de verdad siempre es `trade_data_campoelastic` + el mapping ya creado en Elasticsearch, nunca este archivo.",
+    "properties": {}
+  }
+}

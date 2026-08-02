@@ -1,0 +1,14 @@
+{
+  "_comentario": "Referencia/documentación, NO autoritativa. Convención de nombre de índice y snapshot de los índices reales existentes al momento de escribir este archivo (ver trade_data/elastic/indices.py::index_name en TradeIntelligence).",
+  "convencion_nombre": "{base_datos}_{tabla}_{anio}",
+  "ejemplo": "colombia_importacion_2018",
+  "particionamiento": "Un índice por año, detectado dinámicamente vía YEAR(TablaOrigen.columna_anio). Nunca hardcodeado.",
+  "columna_anio_configurada": "fecha_declaracion",
+  "snapshot_indices_existentes": [
+    { "index": "colombia_importacion_2013", "docs.count": 1, "store.size": "40.6kb" },
+    { "index": "colombia_importacion_2017", "docs.count": 2152, "store.size": "3.1mb" },
+    { "index": "colombia_importacion_2018", "docs.count": 47847, "store.size": "55.7mb" }
+  ],
+  "_nota_2013": "La DIAN incluye ocasionalmente correcciones de años anteriores dentro del archivo mensual vigente (un ítem con fecha_declaracion de 2013 apareció dentro de '01_Importaciones_2018_Enero.zip'); es correcto que termine en su propio índice anual, no un error del ETL.",
+  "_id_documento": "PK simple de 'importacion' (columna 'id'): reindexar la misma fila siempre sobrescribe el mismo documento (ver Arquitectura.md y Elastic.md)."
+}
