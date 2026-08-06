@@ -22,18 +22,16 @@ detallado.
   definir manualmente el modelo dimensional.
 - Dejar los datos listos para Elasticsearch sin que Elasticsearch lea nunca
   directamente las tablas de staging.
-- Integrarse con la plataforma ya existente (TradeIntelligence) en vez de
-  duplicar su metadata, su mapping o su indexador.
+- Integrarse con la plataforma de indexación ya existente (`indexacion`,
+  vía la cola `cola_indexacion`) en vez de indexar directamente desde aquí.
 
 ## Mapa de la documentación
 
 | Documento | Qué explica |
 |---|---|
-| [Arquitectura.md](Arquitectura.md) | La arquitectura completa, las dos bases de datos compartidas (`Dimension`, `trade_intelligence`), el contrato de integración con TradeIntelligence, y el historial de decisiones (qué cambió a mitad de camino y por qué). **Empezar por aquí.** |
+| [Arquitectura.md](Arquitectura.md) | La arquitectura completa, las dos bases de datos compartidas (`Dimension`, `trade_intelligence`), el contrato de integración con `indexacion`, y el historial de decisiones (qué cambió a mitad de camino y por qué). **Empezar por aquí.** |
 | [Modelo_Dimensional.md](Modelo_Dimensional.md) | Cómo se detectó automáticamente cada dimensión (cardinalidad real medida contra la base), deriva de esquema entre vigencias de archivo, y notas de calidad de datos encontradas en producción. |
-| [Flujo_ETL.md](Flujo_ETL.md) | El pipeline completo Fase 1 → 6, la orquestación "un archivo a la vez", idempotencia/reanudación, y cómo extender el proyecto (nuevo país, nueva dimensión, nueva columna). |
-| [Elastic.md](Elastic.md) | Mapping, nombres de índice, indexación incremental, qué se indexa y qué no. |
-| [Metadata.md](Metadata.md) | Cómo se generan los labels automáticamente, y las correcciones que se le aplicaron a la metadata en vivo. |
+| [Flujo_ETL.md](Flujo_ETL.md) | El pipeline completo Fase 1 → 4, la orquestación "un archivo a la vez", idempotencia/reanudación, y cómo extender el proyecto (nuevo país, nueva dimensión, nueva columna). |
 
 ## Arquitectura en una imagen
 
@@ -42,11 +40,12 @@ flowchart LR
     DIAN[DIAN] -->|Fases 1-2\nya optimizadas| STAGE[(temporal_impo)]
     STAGE -->|Fase 3| DIM[(Dimension\ncompartida entre países)]
     STAGE -->|Fase 4\nresuelve en Python\ncontra DIM| FLAT[(colombia.importacion)]
-    FLAT -->|Fase 5-6\nTradeIntelligence| ES[(Elasticsearch)]
+    FLAT -->|Fase 4 encola| COLA[(cola_indexacion)]
+    COLA -->|worker.py, cron\nproyecto indexacion| ES[(Elasticsearch)]
     ES --> UI[Reportes / búsqueda\nen TradeIntelligence]
 ```
 
-Ver el diagrama completo (con las 7 fases y la orquestación por archivo) en
+Ver el diagrama completo (con la orquestación por archivo) en
 [Flujo_ETL.md](Flujo_ETL.md).
 
 ## Qué hace cada fase (resumen; detalle en Arquitectura.md/Flujo_ETL.md)
@@ -61,18 +60,14 @@ Ver el diagrama completo (con las 7 fases y la orquestación por archivo) en
    pendiente, las dimensiones en la base de datos compartida `Dimension`.
 4. **Hechos** (`02_Python/04_ETL_Importaciones.py`): resuelve cada valor en
    memoria (diccionarios cargados desde `Dimension`) e inserta
-   directamente, ya plano, en `colombia.importacion`.
-5. **Metadata** (`02_Python/05_ETL_Metadata.py`): dispara la sincronización
-   de metadata ya existente en TradeIntelligence y aplica labels/tipo
-   mejorados.
-6. **Elasticsearch** (`02_Python/06_ETL_Elastic.py`): dispara la indexación
-   incremental ya existente en TradeIntelligence (sólo lo nuevo desde el
-   último checkpoint).
+   directamente, ya plano, en `colombia.importacion`; encola el archivo en
+   `trade_intelligence.cola_indexacion` para que el worker de `indexacion`
+   lo indexe en Elasticsearch de forma asíncrona.
 
 `main.py` orquesta todo: por defecto, procesa **un archivo a la vez** de
-punta a punta (dimensiones → hechos → índice) antes de pasar al siguiente,
-para que cada mes quede disponible en Elasticsearch apenas termina, sin
-esperar a que se procese todo el histórico.
+punta a punta (dimensiones → hechos → encolado) antes de pasar al siguiente,
+sin esperar a que se procese todo el histórico ni a que termine la
+indexación (que corre en paralelo, fuera de este proceso).
 
 ## Cómo se detectaron las dimensiones automáticamente
 
@@ -120,9 +115,9 @@ para cada caso.
   (`Dimension`), dimensión de rol (`DimPais` en 5 roles), dimensiones
   degeneradas (números de documento sueltos en el hecho), smart key de
   tiempo (donde aplica).
-- **"Reuse, don't duplicate"**: toda la Fase 5-7 se apoya en TradeIntelligence
-  en vez de reimplementar metadata/mapping/indexación en paralelo (ver
-  Arquitectura.md §3).
+- **"Reuse, don't duplicate"**: la indexación se delega por completo al
+  worker de `indexacion` (vía `cola_indexacion`) en vez de reimplementar
+  metadata/mapping/indexación en paralelo (ver Arquitectura.md §3).
 - **Nunca confiar en el nombre de columna sin verificar el dato real**: cada
   decisión de este documento (el id de Colombia, qué tabla de partida usar,
   el NIT vacío del exportador, la clave compuesta de modalidad, un
@@ -145,11 +140,9 @@ para cada caso.
   01_ETL_Descarga.py      Fase 1 (antes 01_fase_descarga.py)
   02_ETL_SQL.py           Fase 2 (antes 02_fase_sql.py, SIN modificar)
   03_ETL_Dimensiones.py   Fase 3
-  04_ETL_Importaciones.py Fase 4
-  05_ETL_Metadata.py      Fase 5
-  06_ETL_Elastic.py       Fase 6
+  04_ETL_Importaciones.py Fase 4 (encola en cola_indexacion al terminar)
   database.py             SQLite de control de descargas (Fase 1)
-  common/                 Módulos compartidos (config, db, checkpoint, labels, geo, parsing)
+  common/                 Módulos compartidos (config, db, checkpoint, cola_indexacion, geo, parsing)
 03_Elastic/               Snapshots de referencia (mapping/índices reales; no autoritativos)
 04_Documentacion/         Este documento y los demás
 main.py                   Orquestador (loop por archivo)

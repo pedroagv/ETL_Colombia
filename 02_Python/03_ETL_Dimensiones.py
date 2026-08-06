@@ -18,6 +18,7 @@ Principios de esta fase (ver reglas obligatorias del proyecto):
     todas las dimensiones nuevas/reutilizadas que se scopean por país.
 """
 import argparse
+import re
 import sys
 
 from common import config, db, checkpoint
@@ -302,57 +303,104 @@ REGLAS = [
 ]
 
 
-def procesar_archivo(conn_colombia, archivo: str) -> int:
-    """Ejecuta todas las reglas de población para un único archivo_origen.
-    Devuelve la cantidad de reglas ejecutadas (no de filas: cada regla es un
-    INSERT masivo, no hay forma de contar "registros" 1:1 con el origen).
+def _obtener_columnas_existentes(conn_colombia, tabla: str) -> set[str]:
+    try:
+        with conn_colombia.cursor() as cur:
+            cur.execute(f"SHOW COLUMNS FROM `colombia`.`{tabla}`")
+            return {row[0].lower() for row in cur.fetchall()}
+    except Exception:
+        return set()
 
-    NOTA: `DimPais` NO se puebla desde aquí. Es una tabla compartida entre
-    todos los países del Data Warehouse, ya poblada (524 filas) y con texto
-    de nombre poco predecible entre orígenes (la DIAN usa nombres oficiales
-    largos, ej. "COREA (SUR) REPÚBLICA DE", que no coinciden con el texto
-    usado por otros países); insertar variantes de texto ahí arriesgaría
-    duplicar países bajo distintos nombres. El ISO2 que necesita
-    `importacion.pais_origen` se resuelve en la Fase 4 con un catálogo
-    estático propio (`common/geo.py`), sin tocar `Dimension.DimPais`."""
+
+COLUMNAS_ORIGEN_CONOCIDAS = {
+    "cod_departamento_destino", "departamento_destino", "codigo_depto_importador", "departamento_importador",
+    "codigo_municipio", "empresa_transportadora", "banc_codigo_banco", "cod_forma_pago", "forma_pago",
+    "cod_tipo_declaracion", "tipo_declaracion", "cod_clase_importador", "clase_importador",
+    "cod_tipo_importacion", "tipo_importacion", "codigo_embalaje", "clase_de_embalaje",
+    "codigo_entidad_intermedia", "codigo_deposito", "actividad_economica_sec", "moda_codigo_modalidad",
+    "cod_modalidad_importacion", "cod_aduana_presentada", "aduana_presentada", "cod_administracion_presentada_1",
+    "nombre_aduana_1", "cod_aduana_anterior", "cod_aduana_export", "cod_lugar_ingreso_mcia", "lugar_ingreso_mcia",
+    "nit_importador", "nombre_importador", "direccion_importador", "telefono_importador",
+    "numero_identificac_export", "nombre_exportador", "direccion_exportador", "nit_declarante",
+    "docto_identif_declar", "nombre_declarante", "razon_social_declarante", "subpartida_arancelaria"
+}
+
+
+def _adaptar_sql_para_columnas(sql: str, tabla: str, existing_cols: set[str]) -> str:
+    """Reemplaza `temporal_impo` por `tabla` y sustituye solo nombres de columnas de origen inexistentes por NULL."""
+    sql_adaptado = sql.replace("`temporal_impo`", f"`{tabla}`")
+    
+    if not existing_cols:
+        return sql_adaptado
+
+    for col in COLUMNAS_ORIGEN_CONOCIDAS:
+        if col not in existing_cols:
+            sql_adaptado = re.sub(r'\b' + col + r'\b', 'NULL', sql_adaptado)
+            
+    return sql_adaptado
+
+
+
+
+def procesar_archivo(conn_colombia, archivo: str, tabla_origen: str = "temporal_impo") -> int:
+    """Ejecuta todas las reglas de población para un único archivo_origen.
+    Devuelve la cantidad de reglas ejecutadas."""
+    existing_cols = _obtener_columnas_existentes(conn_colombia, tabla_origen)
+    reglas_exitosas = 0
     with conn_colombia.cursor() as cursor:
         for regla in REGLAS:
-            params = tuple([archivo] * regla["n"])
-            cursor.execute(regla["sql"], params)
+            sql = _adaptar_sql_para_columnas(regla["sql"], tabla_origen, existing_cols)
+            n_placeholders = sql.count("%s")
+            params = tuple([archivo] * n_placeholders) if n_placeholders > 0 else ()
+            try:
+                cursor.execute(sql, params)
+                reglas_exitosas += 1
+            except Exception as e:
+                logger.warning(f"Advertencia aplicando regla '{regla['nombre']}' en '{archivo}' ({tabla_origen}): {e}")
     conn_colombia.commit()
-    return len(REGLAS)
+    return reglas_exitosas
+
+
 
 
 def main():
     parser = argparse.ArgumentParser(description="Fase 3: población de dimensiones en la base de datos compartida 'Dimension'.")
     parser.add_argument("--archivo", default=None, help="Procesa únicamente este archivo_origen (por defecto: todos los pendientes).")
+    parser.add_argument("--tabla-origen", default=None, choices=["temporal_impo", "temporal_expo"], help="Tabla temporal origen.")
     args = parser.parse_args()
 
     logger.info("=== Iniciando Fase 3: Dimensiones ===")
     conn = db.get_connection(database=config.MYSQL_DATABASE)
     try:
-        archivos = [args.archivo] if args.archivo else checkpoint.archivos_pendientes(conn, TABLA_ORIGEN, FASE)
-        if not archivos:
-            logger.info("No hay archivos pendientes para la Fase 3 (Dimensiones).")
-            return
+        tablas_a_procesar = [args.tabla_origen] if args.tabla_origen else ["temporal_impo", "temporal_expo"]
+        hubo_error = False
 
-        logger.info(f"{len(archivos)} archivo(s) pendiente(s) para poblar dimensiones.")
-        for archivo in archivos:
-            logger.info(f"--- Procesando dimensiones de '{archivo}' ---")
-            inicio = checkpoint.marcar_inicio(conn, TABLA_ORIGEN, archivo, FASE)
-            try:
-                n_reglas = procesar_archivo(conn, archivo)
-                checkpoint.marcar_exito(conn, TABLA_ORIGEN, archivo, FASE, n_reglas, inicio)
-                logger.info(f"'{archivo}': {n_reglas} reglas de dimensión aplicadas.")
-            except Exception as e:
-                conn.rollback()
-                checkpoint.marcar_error(conn, TABLA_ORIGEN, archivo, FASE, str(e))
-                logger.error(f"Error poblando dimensiones para '{archivo}': {e}", exc_info=True)
+        for tabla in tablas_a_procesar:
+            archivos = [args.archivo] if args.archivo else checkpoint.archivos_pendientes(conn, tabla, FASE)
+            if not archivos:
+                continue
+
+            logger.info(f"{len(archivos)} archivo(s) pendiente(s) en '{tabla}' para poblar dimensiones.")
+            for archivo in archivos:
+                logger.info(f"--- Procesando dimensiones de '{archivo}' ({tabla}) ---")
+                inicio = checkpoint.marcar_inicio(conn, tabla, archivo, FASE)
+                try:
+                    n_reglas = procesar_archivo(conn, archivo, tabla)
+                    checkpoint.marcar_exito(conn, tabla, archivo, FASE, n_reglas, inicio)
+                    logger.info(f"'{archivo}': {n_reglas} reglas de dimensión aplicadas.")
+                except Exception as e:
+                    hubo_error = True
+                    conn.rollback()
+                    checkpoint.marcar_error(conn, tabla, archivo, FASE, str(e))
+                    logger.error(f"Error poblando dimensiones para '{archivo}': {e}", exc_info=True)
 
         logger.info("=== Fase 3 completada ===")
+        if hubo_error:
+            sys.exit(1)
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
     main()
+

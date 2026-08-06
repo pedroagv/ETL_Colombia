@@ -14,7 +14,7 @@ Grano: un ítem/subpartida de una declaración de importación (una fila de
 import argparse
 import sys
 
-from common import config, db, checkpoint, geo
+from common import config, db, checkpoint, geo, cola_indexacion
 from common.parsing import parse_fecha, primera_fecha_valida, parse_decimal, parse_entero, limpio
 from common.logging_setup import get_logger
 
@@ -246,30 +246,177 @@ def transformar_fila(origen: dict, dicc: Diccionarios, archivo_origen: str) -> t
 
 
 def procesar_archivo(conn, dicc: Diccionarios, archivo: str) -> int:
-    columnas_sql = ", ".join(f"`{c}`" for c in COLUMNAS_ORIGEN)
+    with conn.cursor() as cursor:
+        cursor.execute("SHOW COLUMNS FROM `temporal_impo`")
+        existing_cols = {row[0].lower() for row in cursor.fetchall()}
+
+    col_selects = [f"`{c}`" if c in existing_cols else f"NULL AS `{c}`" for c in COLUMNAS_ORIGEN]
+    columnas_sql = ", ".join(col_selects)
     insert_sql = (
         f"INSERT INTO `importacion` ({', '.join(f'`{c}`' for c in COLUMNAS_DESTINO)}) "
         f"VALUES ({', '.join(['%s'] * len(COLUMNAS_DESTINO))})"
     )
 
     total = 0
-    with conn.cursor() as cursor:
-        cursor.execute("DELETE FROM `importacion` WHERE `archivo_origen` = %s", (archivo,))
+    with conn.cursor() as cursor_write:
+        cursor_write.execute("DELETE FROM `importacion` WHERE `archivo_origen` = %s", (archivo,))
 
-        cursor.execute(f"SELECT {columnas_sql} FROM `temporal_impo` WHERE archivo_origen = %s", (archivo,))
+    # Cursor de lectura separado del de escritura: ejecutar el INSERT sobre el
+    # mismo cursor que tiene abierto el SELECT descarta su resultset en
+    # pymysql (fetchmany() siguiente vuelve vacío), cortando el bucle tras el
+    # primer CHUNK_SIZE aunque queden filas por procesar.
+    with conn.cursor() as cursor_read, conn.cursor() as cursor_write:
+        cursor_read.execute(f"SELECT {columnas_sql} FROM `temporal_impo` WHERE archivo_origen = %s", (archivo,))
         while True:
-            filas = cursor.fetchmany(CHUNK_SIZE)
+            filas = cursor_read.fetchmany(CHUNK_SIZE)
             if not filas:
                 break
             lote = []
             for fila in filas:
                 origen = dict(zip(COLUMNAS_ORIGEN, fila))
                 lote.append(transformar_fila(origen, dicc, archivo))
-            cursor.executemany(insert_sql, lote)
+            cursor_write.executemany(insert_sql, lote)
             total += len(lote)
             logger.debug(f"'{archivo}': {total} filas insertadas en 'importacion' hasta ahora.")
     conn.commit()
     return total
+
+
+
+def _asegurar_tabla_importacion(conn):
+    sql = """
+    CREATE TABLE IF NOT EXISTS `importacion` (
+      `id`                          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      `fecha_declaracion`           DATE NULL,
+      `anio`                        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+      `trimestre`                   TINYINT UNSIGNED NULL,
+      `mes`                         TINYINT UNSIGNED NULL,
+      `nombre_mes`                  VARCHAR(20) NULL,
+      `anio_mes`                    CHAR(7) NULL,
+      `pais_origen`                 CHAR(2) NULL,
+      `pais_origen_nombre`          VARCHAR(150) NULL,
+      `pais_procedencia`            VARCHAR(150) NULL,
+      `pais_compra`                 VARCHAR(150) NULL,
+      `pais_exportador`             VARCHAR(150) NULL,
+      `bandera_transporte`          VARCHAR(150) NULL,
+      `departamento_destino`        VARCHAR(150) NULL,
+      `departamento_importador`     VARCHAR(150) NULL,
+      `municipio`                   VARCHAR(150) NULL,
+      `aduana_presentada`           VARCHAR(150) NULL,
+      `aduana_anterior`             VARCHAR(150) NULL,
+      `aduana_exportacion`          VARCHAR(150) NULL,
+      `importador`                  VARCHAR(255) NULL,
+      `nit_importador`              VARCHAR(20) NULL,
+      `exportador`                  VARCHAR(255) NULL,
+      `agente_aduanero`             VARCHAR(255) NULL,
+      `empresa_transportadora`      VARCHAR(255) NULL,
+      `partida_arancelaria`         VARCHAR(10) NULL,
+      `capitulo`                    VARCHAR(2) NULL,
+      `capitulo_nombre`             VARCHAR(150) NULL,
+      `unidad_medida`               VARCHAR(100) NULL,
+      `forma_pago`                  VARCHAR(150) NULL,
+      `banco`                       VARCHAR(150) NULL,
+      `regimen_aduanero`            VARCHAR(150) NULL,
+      `tipo_declaracion`            VARCHAR(150) NULL,
+      `clase_importador`            VARCHAR(150) NULL,
+      `tipo_importacion`            VARCHAR(150) NULL,
+      `modo_transporte`             VARCHAR(150) NULL,
+      `embalaje`                    VARCHAR(150) NULL,
+      `acuerdo_comercial`           VARCHAR(150) NULL,
+      `entidad_intermedia`          VARCHAR(150) NULL,
+      `deposito`                    VARCHAR(150) NULL,
+      `actividad_economica`         VARCHAR(150) NULL,
+      `moneda`                      CHAR(3) NULL,
+      `peso_neto`                   DECIMAL(18,4) NULL,
+      `peso_bruto`                  DECIMAL(18,4) NULL,
+      `cantidad`                    DECIMAL(18,4) NULL,
+      `cantidad_subpartidas`        DECIMAL(18,4) NULL,
+      `numero_bultos`               DECIMAL(18,4) NULL,
+      `tasa_cambio`                 DECIMAL(18,6) NULL,
+      `num_cuotas_o_meses`          SMALLINT UNSIGNED NULL,
+      `valor_fob_usd`               DECIMAL(18,2) NULL,
+      `valor_cif_usd`               DECIMAL(18,2) NULL,
+      `valor_aduana_usd`            DECIMAL(18,2) NULL,
+      `valor_ajuste_usd`            DECIMAL(18,2) NULL,
+      `valor_fletes_usd`            DECIMAL(18,2) NULL,
+      `valor_seguros_usd`           DECIMAL(18,2) NULL,
+      `valor_otros_gastos_usd`      DECIMAL(18,2) NULL,
+      `fletes_seguros1`             DECIMAL(18,2) NULL,
+      `valor_cuota_usd`             DECIMAL(18,2) NULL,
+      `porcentaje_arancel`          DECIMAL(9,4) NULL,
+      `base_arancel`                DECIMAL(18,2) NULL,
+      `total_liquidado_arancel`     DECIMAL(18,2) NULL,
+      `total_a_pagar_arancel`       DECIMAL(18,2) NULL,
+      `porcentaje_iva`              DECIMAL(9,4) NULL,
+      `base_iva`                    DECIMAL(18,2) NULL,
+      `total_liquidado_iva`         DECIMAL(18,2) NULL,
+      `total_a_pagar_iva`           DECIMAL(18,2) NULL,
+      `porcentaje_otros1`           DECIMAL(9,4) NULL,
+      `base_otros1`                 DECIMAL(18,2) NULL,
+      `subtotal_otros1`             DECIMAL(18,2) NULL,
+      `valor_total_otros`           DECIMAL(18,2) NULL,
+      `otros_pagados`               DECIMAL(18,2) NULL,
+      `porcentaje_sancion`          DECIMAL(9,4) NULL,
+      `base_sancion`                DECIMAL(18,2) NULL,
+      `total_liquidado_sancion`     DECIMAL(18,2) NULL,
+      `total_a_pagar_sancion`       DECIMAL(18,2) NULL,
+      `porcentaje_salvaguardia`     DECIMAL(9,4) NULL,
+      `base_salvaguardia`           DECIMAL(18,2) NULL,
+      `total_liquidado_salvaguardia` DECIMAL(18,2) NULL,
+      `total_a_pagar_salvaguardia`  DECIMAL(18,2) NULL,
+      `porcentaje_derechos_comp`    DECIMAL(9,4) NULL,
+      `base_derechos_comp`          DECIMAL(18,2) NULL,
+      `total_liquidado_derechos_comp` DECIMAL(18,2) NULL,
+      `total_a_pagar_derechos_comp` DECIMAL(18,2) NULL,
+      `porcentaje_antidumping`      DECIMAL(9,4) NULL,
+      `base_antidumping`            DECIMAL(18,2) NULL,
+      `total_liquidado_antidumping` DECIMAL(18,2) NULL,
+      `total_a_pagar_antidumping`   DECIMAL(18,2) NULL,
+      `porcentaje_rescate`          DECIMAL(9,4) NULL,
+      `base_rescate`                DECIMAL(18,2) NULL,
+      `total_liquidado_rescate`     DECIMAL(18,2) NULL,
+      `total_a_pagar_rescate`       DECIMAL(18,2) NULL,
+      `total_item1`                 DECIMAL(18,2) NULL,
+      `valor_total_arancel`         DECIMAL(18,2) NULL,
+      `valor_total_iva`             DECIMAL(18,2) NULL,
+      `total_liquidado`             DECIMAL(18,2) NULL,
+      `pago_total`                  DECIMAL(18,2) NULL,
+      `valor_pagos_anteriores`      DECIMAL(18,2) NULL,
+      `numero_formulario`           VARCHAR(30) NULL,
+      `num_aceptacion_declaracion`  VARCHAR(30) NULL,
+      `numero_factura`              VARCHAR(50) NULL,
+      `documento_transporte`        VARCHAR(50) NULL,
+      `manifiesto_de_carga`         VARCHAR(50) NULL,
+      `descripcion_mercancia`       TEXT NULL,
+      `archivo_origen`              VARCHAR(255) NULL,
+      `fecha_carga_dw`              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (`id`),
+      KEY `idx_importacion_anio` (`anio`),
+      KEY `idx_importacion_fecha` (`fecha_declaracion`),
+      KEY `idx_importacion_archivo_origen` (`archivo_origen`(191))
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    sql_control = """
+    CREATE TABLE IF NOT EXISTS `etl_control_carga` (
+      `id`                    INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      `tabla_origen`          VARCHAR(64) NOT NULL,
+      `archivo_origen`        VARCHAR(255) NOT NULL,
+      `fase`                  VARCHAR(30) NOT NULL,
+      `estado`                VARCHAR(20) NOT NULL,
+      `registros_procesados`  INT UNSIGNED NULL,
+      `fecha_inicio`          DATETIME NULL,
+      `fecha_fin`             DATETIME NULL,
+      `tiempo_ejecucion_seg`  DECIMAL(10,2) NULL,
+      `mensaje_error`         TEXT NULL,
+      UNIQUE KEY `uq_etl_control_carga` (`tabla_origen`, `archivo_origen`, `fase`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(sql)
+        cursor.execute(sql_control)
+    conn.commit()
+
+
 
 
 def main():
@@ -280,12 +427,14 @@ def main():
     logger.info("=== Iniciando Fase 4: tabla 'importacion' ===")
     conn = db.get_connection(database=config.MYSQL_DATABASE)
     try:
+        _asegurar_tabla_importacion(conn)
         archivos = [args.archivo] if args.archivo else checkpoint.archivos_pendientes(conn, TABLA_ORIGEN, FASE)
         if not archivos:
             logger.info("No hay archivos pendientes para la Fase 4 (Hechos).")
             return
 
         logger.info(f"{len(archivos)} archivo(s) pendiente(s) para cargar en 'importacion'.")
+        hubo_error = False
         for archivo in archivos:
             logger.info(f"--- Procesando hechos de '{archivo}' ---")
             inicio = checkpoint.marcar_inicio(conn, TABLA_ORIGEN, archivo, FASE)
@@ -294,15 +443,30 @@ def main():
                 total = procesar_archivo(conn, dicc, archivo)
                 checkpoint.marcar_exito(conn, TABLA_ORIGEN, archivo, FASE, total, inicio)
                 logger.info(f"'{archivo}': {total} filas cargadas en 'importacion'.")
+                cola_indexacion.encolar_importacion(conn, archivo)
+                logger.info(f"'{archivo}': encolado para indexación en Elasticsearch.")
+
+                # Limpieza quirúrgica: una vez insertado en 'importacion' y encolado en 'cola_indexacion',
+                # eliminamos de 'temporal_impo' únicamente este archivo_origen.
+                with conn.cursor() as cursor:
+                    cursor.execute("DELETE FROM `temporal_impo` WHERE `archivo_origen` = %s", (archivo,))
+                conn.commit()
+                logger.info(f"'{archivo}': eliminadas sus filas crudas de 'temporal_impo'.")
             except Exception as e:
+                hubo_error = True
                 conn.rollback()
                 checkpoint.marcar_error(conn, TABLA_ORIGEN, archivo, FASE, str(e))
                 logger.error(f"Error cargando hechos de '{archivo}': {e}", exc_info=True)
 
         logger.info("=== Fase 4 completada ===")
+        if hubo_error:
+            # Código de salida != 0 para que main.py sepa que al menos un
+            # archivo falló y no reporte falsamente el ciclo como exitoso.
+            sys.exit(1)
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
     main()
+

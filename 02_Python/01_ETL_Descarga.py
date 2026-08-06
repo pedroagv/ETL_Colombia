@@ -23,6 +23,9 @@ RUN_INTERVAL_DAYS = int(os.getenv("RUN_INTERVAL_DAYS", "15"))
 REQUESTS_TIMEOUT = int(os.getenv("REQUESTS_TIMEOUT", "120"))
 LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 # Configurar logging
 logging_level = getattr(logging, LOG_LEVEL_STR, logging.INFO)
 logging.basicConfig(
@@ -31,9 +34,11 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler("dian_downloader.log", encoding="utf-8"),
         logging.StreamHandler(sys.stdout)
-    ]
+    ],
+    force=True
 )
 logger = logging.getLogger("dian_downloader")
+
 
 # Crear directorios de destino si no existen
 os.makedirs(IMPO_DIR, exist_ok=True)

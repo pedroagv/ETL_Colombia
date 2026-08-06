@@ -19,7 +19,7 @@ flowchart LR
     subgraph ETL_Colombia["ETL_Colombia (este repo)"]
         F1[Fase 1\nDescarga DIAN] --> F2[Fase 2\ntemporal_impo\nYA OPTIMIZADA]
         F2 --> F3[Fase 3\nDimensiones]
-        F3 --> F4[Fase 4\nimportacion]
+        F3 --> F4[Fase 4\nimportacion\n+ encola en cola_indexacion]
     end
 
     subgraph Dimension["BD Dimension (compartida)"]
@@ -27,15 +27,13 @@ flowchart LR
         DimOtras[(DimImportador, DimAduana,\nDimPartidas, DimModalidad...)]
     end
 
-    subgraph TI["TradeIntelligence (otro repo)"]
-        F5[Fase 5\nscan_columns\nCampoElastic] --> F6[Fase 6\nmapping + run_indexing]
-        F6 --> ES[(Elasticsearch\ncolombia_importacion_AAAA)]
+    subgraph Indexacion["indexacion (proyecto hermano)"]
+        Cola[(trade_intelligence.\ncola_indexacion)] --> Worker[worker.py\ncron cada minuto\nSP + Elasticsearch]
+        Worker --> ES[(Elasticsearch\ncolombia_importacion_AAAA)]
     end
 
     F3 -.lee/escribe.-> Dimension
-    F4 -->|tabla física exacta\n'importacion'| F5
-    F4 -.dispara vía\nmanage.py.-> F5
-    F5 -.dispara vía\nmanage.py.-> F6
+    F4 -->|INSERT PENDIENTE| Cola
 ```
 
 ## 2. Las dos bases de datos compartidas
@@ -74,38 +72,40 @@ Este proyecto:
 Ver el detalle completo, columna por columna, en
 [Modelo_Dimensional.md](Modelo_Dimensional.md).
 
-### 2.2 `trade_intelligence` (MySQL, mismo servidor, la usa Django)
+### 2.2 `trade_intelligence` (MySQL, mismo servidor)
 
-Es la base de datos de la aplicación TradeIntelligence. Contiene, entre
-otras, la tabla `trade_data_campoelastic` (el "diccionario de metadata" que
-pedía originalmente este proyecto) y `trade_data_tablaorigen`. **Este
-proyecto nunca escribe ahí directamente vía Django/ORM** — no depende de
-Django ni de su settings — pero sí hace dos cosas puntuales en SQL directo
-(ver `05_ETL_Metadata.py`): configura `columna_anio` y mejora los labels
-recién creados. Todo lo demás (crear/actualizar filas de `CampoElastic`,
-construir el SELECT, generar el mapping de Elasticsearch, indexar) lo hace
-TradeIntelligence con su propio código, disparado por `manage.py` en
-subproceso.
+Es la base de datos compartida por la plataforma de consumo. Contiene la
+tabla `cola_indexacion` (ver §3), que es el **único** punto de contacto de
+este proyecto con esa base: `04_ETL_Importaciones.py` hace un `INSERT`
+directo en SQL plano, sin Django ni ORM, cuando termina de cargar un
+archivo. `trade_intelligence` también tiene la tabla legacy
+`trade_data_campoelastic` (metadata de columnas para la UI de búsqueda de
+TradeIntelligence), pero **este proyecto ya no la toca en absoluto** — ver
+§3.
 
-## 3. Contrato de integración con TradeIntelligence
+## 3. Contrato de integración con `indexacion`
 
-Este es el descubrimiento más importante del diseño: **TradeIntelligence ya
-implementa las Fases 5, 6 y 7** (metadata automática, mapping de
-Elasticsearch, indexación con Bulk API) de forma genérica, para cualquier
-tabla de cualquier país. Reimplementarlas en este proyecto habría creado dos
-sistemas paralelos indexando lo mismo con convenciones distintas.
+Este proyecto **nunca** escribe en Elasticsearch, ni ejecuta código de otro
+proyecto en subproceso: solo encola. El contrato completo es una fila en
+`trade_intelligence.cola_indexacion` (`common/cola_indexacion.py`, insertada
+por `04_ETL_Importaciones.py` al terminar cada archivo):
 
-El contrato exacto, verificado contra su código
-(`trade_data/scanner/introspection.py`, `trade_data/settings/base.py`):
-
-| Requisito | Detalle |
+| Columna | Valor que pone este proyecto |
 |---|---|
-| Tipo de objeto | Debe ser una **tabla física** (`TABLE_TYPE='BASE TABLE'`). Una `VIEW` **no** se detecta (el escáner filtra explícitamente por tabla base). |
-| Nombre exacto | `importacion` / `exportacion` (minúsculas, singular). `TRADE_DATA_TABLE_PATTERNS` por defecto es `"importacion,exportacion"` **sin comodines** → `LIKE` sin `%` = igualdad exacta. |
-| Esquema | Cualquier base de datos MySQL visible desde la conexión Django `default` (que ve todo el servidor); `colombia` ya es visible. |
-| Forma de los datos | **Completamente plana**: `trade_data/indexing/select_builder.py` arma el SELECT como `SELECT col1, col2, ... FROM esquema.tabla` **sin ningún JOIN**. Si `importacion` guardara IDs de dimensión en vez de texto resuelto, esos IDs quedarían crudos en Elasticsearch. |
-| PK para el `_id` de Elasticsearch | Debe ser una **PK de una sola columna** (`trade_data/indexing/pipeline.py::_find_pk_column` exige exactamente 1 columna en `KEY_COLUMN_USAGE`); si no, cae a un hash de toda la fila (funciona, pero es más frágil ante reprocesos). |
-| Partición de índices | `TablaOrigen.columna_anio` debe apuntar a una columna `DATE`/entero-año propia de `importacion` (se configura automáticamente, ver `05_ETL_Metadata.py`). |
+| `pais` | `"colombia"` |
+| `tipo_intercambio` | `"IMPORTACION"` / `"EXPORTACION"` |
+| `procedimiento_almacenado` | Nombre del SP de MySQL que, dado un `archivo`, devuelve las filas ya planas listas para indexar (`sp_extraer_importacion_por_archivo`, definido en `01_SQL/06_Procedimientos.sql`) |
+| `archivo` | Nombre del archivo origen procesado |
+| `estado` | `"PENDIENTE"` |
+
+El proyecto hermano `indexacion` trae un `worker.py` (script de consola, sin
+Django, corrido por cron cada minuto) que toma las filas `PENDIENTE`,
+ejecuta el SP indicado pasándole `archivo`, y sube el resultado a
+Elasticsearch con la Bulk API — ver `indexacion/README.md` y
+`indexacion/worker.py`. Este worker **no depende de `CampoElastic`**: el SP
+es la única fuente de verdad de qué columnas se indexan (reemplazó al diseño
+anterior de escaneo de `INFORMATION_SCHEMA` + mapping dinámico desde
+`CampoElastic`, que quedó retirado).
 
 ### Por qué la resolución de dimensiones se hace en Python (y no con SQL JOIN)
 
@@ -127,19 +127,12 @@ plana en `importacion`. La vista `VW_Elastic_Importaciones` que sí existe
 
 ### Automatización sin duplicar el indexador
 
-`02_Python/05_ETL_Metadata.py` y `06_ETL_Elastic.py` **no reimplementan**
-metadata/mapping/indexación: disparan, en subproceso, los `manage.py` que
-TradeIntelligence ya trae (`scan_columns`, `run_indexing`), usando su propio
-intérprete de Python (`TRADE_INTELLIGENCE_PYTHON`/`TRADE_INTELLIGENCE_DIR`
-en `.env`). Esto evita que dos copias de la misma lógica diverjan con el
-tiempo.
-
-Se agregó un parámetro `--min-id` a `run_indexing` (en
-`TradeIntelligence/trade_data/indexing/pipeline.py` y su management command),
-pequeño y aditivo, para poder indexar **incrementalmente** (sólo las filas
-insertadas después de cierto `id`) en vez de releer `importacion` completa
-en cada corrida — la pieza que hace posible "meter un archivo, indexarlo, y
-seguir con el siguiente" (ver §5 y [Flujo_ETL.md](Flujo_ETL.md)).
+Este proyecto **no reimplementa** metadata/mapping/indexación: encola cada
+archivo procesado (`cola_indexacion`, §3) y deja que el worker de
+`indexacion` lo indexe de forma asíncrona, sin esperarlo ni dispararlo
+directamente. Esto evita que dos copias de la misma lógica de indexación
+diverjan con el tiempo, y hace innecesario cualquier `manage.py` o
+intérprete Python de otro proyecto configurado en `.env`.
 
 ## 4. Decisión: `DimPais` no se toca desde este ETL
 
@@ -162,14 +155,14 @@ FRANCA..." (correctamente sin país, no es un dato faltante).
 
 ## 5. Por qué "un archivo a la vez" (y no por fases completas)
 
-Pedido explícito: procesar un archivo, indexarlo, y "liberar" antes de seguir
-con el siguiente — en vez de terminar TODA la Fase 3 para el histórico
-completo, luego TODA la Fase 4, etc. `main.py::run_dw_pipeline()` implementa
-esto: por cada `archivo_origen` pendiente (según `etl_control_carga`) corre
-Fase 3 → Fase 4 → Fase 6 (incremental) para ESE archivo antes de pasar al
-siguiente. La Fase 5 (metadata) se sincroniza una sola vez al principio,
-porque no depende de qué archivo se está cargando, sólo de la estructura de
-`importacion`.
+Pedido explícito: procesar un archivo y "liberarlo" (encolado para indexar)
+antes de seguir con el siguiente — en vez de terminar TODA la Fase 3 para el
+histórico completo, luego TODA la Fase 4, etc. `main.py::run_dw_pipeline()`
+implementa esto: por cada `archivo_origen` pendiente (según
+`etl_control_carga`) corre Fase 3 → Fase 4 para ESE archivo antes de pasar al
+siguiente; Fase 4 encola el archivo en `cola_indexacion` (§3) al terminar,
+así el worker de `indexacion` puede empezar a indexarlo sin que este ETL
+tenga que esperarlo.
 
 ## 6. Por qué `importacion` no está particionada en MySQL
 
@@ -179,15 +172,13 @@ Elasticsearch **ya particiona por año a nivel de índice**
 (`colombia_importacion_2018`, `..._2019`, ...), que es donde ocurre el
 análisis real; y (b) particionar en MySQL exige que la columna de partición
 (`anio`) forme parte de la PRIMARY KEY, degradándola de `id` simple a
-compuesta `(id, anio)` — lo que le impide a TradeIntelligence detectar una
-PK de una sola columna y lo obliga a usar un hash de toda la fila como `_id`
-de Elasticsearch (funciona, pero es más frágil: un reproceso que cambie
-cualquier valor de una fila generaría un documento nuevo en vez de
-sobrescribir el existente). El beneficio de particionar en MySQL era además
-marginal, porque nadie consulta `importacion` con SQL filtrado por año — el
-filtro por año lo resuelve Elasticsearch. Se optó por PK simple (`id`) sin
-particionar, verificado en vivo: el `_id` de Elasticsearch coincide ahora
-exactamente con `importacion.id`.
+compuesta `(id, anio)` — el SP de indexación (§3) usa la columna `id` del
+resultado tal cual como `_id` de Elasticsearch, así que una PK compuesta
+complicaría ese contrato sin necesidad. El beneficio de particionar en MySQL
+era además marginal, porque nadie consulta `importacion` con SQL filtrado
+por año — el filtro por año lo resuelve Elasticsearch. Se optó por PK simple
+(`id`) sin particionar, verificado en vivo: el `_id` de Elasticsearch
+coincide exactamente con `importacion.id`.
 
 ## 7. Historial de decisiones (por qué el diseño cambió a mitad de camino)
 
@@ -212,8 +203,9 @@ exactamente con `importacion.id`.
      de clave natural).
    - `DimModalidad` (clave compuesta de dos columnas, no una sola).
    - Un `tipo_elastic` incorrecto pre-existente en `trade_data_campoelastic`
-     (`manifiesto_de_carga` como `double` debiendo ser `keyword`), corregido
-     por `05_ETL_Metadata.py` junto con los labels.
+     (`manifiesto_de_carga` como `double` debiendo ser `keyword`), detectado
+     y corregido en su momento vía un script de metadata hoy retirado (el
+     diseño de metadata cambió después, ver §3).
    - La estrategia de país (ver §4).
    - PK simple sin particionar en `importacion` (ver §6).
 
@@ -221,8 +213,9 @@ exactamente con `importacion.id`.
 
 - No modifica la Fase 2 (`02_ETL_SQL.py`, antes `02_fase_sql.py`): sigue
   siendo un "dumb pipe" de streaming hacia `temporal_impo`.
-- No reimplementa metadata, mapping de Elasticsearch, ni el indexador: los
-  dispara en TradeIntelligence.
+- No reimplementa metadata, mapping de Elasticsearch, ni el indexador: solo
+  encola cada archivo en `cola_indexacion` (§3) y delega el resto al worker
+  de `indexacion`.
 - No pretende resolver automáticamente todo enriquecimiento de nombre
   faltante (bancos, entidades intermedias, depósitos): quedan expuestos por
   su código crudo hasta que alguien complete `Nombre` en la dimensión

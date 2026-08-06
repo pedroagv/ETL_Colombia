@@ -48,6 +48,9 @@ MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "colombia")
 
 LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+
 # Configurar Logging
 logging_level = getattr(logging, LOG_LEVEL_STR, logging.INFO)
 logging.basicConfig(
@@ -56,8 +59,11 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler("dian_etl_sql.log", encoding="utf-8"),
         logging.StreamHandler(sys.stdout)
-    ]
+    ],
+    force=True
 )
+
+
 logger = logging.getLogger("dian_etl_sql")
 
 
@@ -115,7 +121,7 @@ class MySQLManager:
         self.password = MYSQL_PASSWORD
         self.db_name = MYSQL_DATABASE
         self._ensure_database_exists()
-        self._rename_legacy_tables()
+
 
     def get_connection(self, select_db=True):
         return pymysql.connect(
@@ -186,6 +192,30 @@ class MySQLManager:
                 return {row[0]: row[1].lower() for row in rows}
         except pymysql.MySQLError:
             return {}
+        finally:
+            conn.close()
+
+    def truncate_table(self, table_name: str):
+        """
+        Vacía la tabla temporal al iniciar el ciclo: una vez que las Fases 3-4
+        terminan de consumir un archivo, ya quedó cargado en 'importacion' y
+        encolado para Elasticsearch, así que no hace falta conservar la copia
+        cruda y la temporal no debe crecer indefinidamente con cada corrida.
+        No falla si la tabla todavía no existe (primera corrida).
+        """
+        conn = self.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SHOW TABLES LIKE %s", (table_name,))
+                if not cursor.fetchone():
+                    return
+                cursor.execute(f"TRUNCATE TABLE `{table_name}`;")
+            conn.commit()
+            logger.info(f"Tabla temporal '{table_name}' truncada al iniciar el ciclo.")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error truncando la tabla temporal '{table_name}': {e}")
+            raise e
         finally:
             conn.close()
 
@@ -291,7 +321,11 @@ class MySQLManager:
                     cursor.executemany(insert_sql, batch)
                     conn.commit()
                     total_inserted += len(batch)
-                    logger.debug(f"Insertados {total_inserted} registros en '{table_name}' (bloque de {len(batch)}).")
+                    if total_inserted % 25000 == 0 or total_inserted == len(batch):
+                        logger.info(f"Avance staging '{archivo_origen}': {total_inserted} filas insertadas en '{table_name}'.")
+                    else:
+                        logger.debug(f"Insertados {total_inserted} registros en '{table_name}'.")
+
 
             return total_inserted
         except Exception as e:
@@ -394,10 +428,18 @@ def stream_excel_chunks(zip_path: str, member_name: str, chunk_size: int):
 
             batch = []
             for row in rows_iter:
-                if row is None or all(v is None for v in row):
+                if not row:
                     continue
-                row = list(row[:n_cols]) + [None] * (n_cols - len(row))
-                batch.append(tuple(row))
+                r_len = len(row)
+                if r_len < n_cols:
+                    row = row + (None,) * (n_cols - r_len)
+                elif r_len > n_cols:
+                    row = row[:n_cols]
+
+                if not any(row):
+                    continue
+
+                batch.append(row)
                 if len(batch) >= chunk_size:
                     yield columns, batch
                     batch = []
@@ -407,6 +449,7 @@ def stream_excel_chunks(zip_path: str, member_name: str, chunk_size: int):
             wb.close()
     finally:
         os.remove(tmp_path)
+
 
 
 def stream_legacy_xls_chunks(zip_path: str, member_name: str, chunk_size: int):
@@ -454,6 +497,17 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
     Procesa todos los archivos ZIP contenidos en el directorio especificado,
     leyendo y cargando cada uno en bloques (streaming) hacia MySQL.
     """
+    table_names = {
+        "importaciones": "temporal_impo",
+        "impo": "temporal_impo",
+        "exportaciones": "temporal_expo",
+        "expo": "temporal_expo"
+    }
+    table_name = table_names.get(file_type.lower(), f"temporal_{file_type.lower()}")
+
+    # La limpieza se realiza de forma quirúrgica por archivo (DELETE por archivo_origen)
+    # tanto en la Fase 2 (idempotencia antes de insertar) como al finalizar la Fase 4.
+
     if not os.path.exists(source_dir):
         logger.info(f"Directorio de origen '{source_dir}' no existe. Omitiendo.")
         return
@@ -468,21 +522,15 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
     if limit_files:
         zip_files = zip_files[:limit_files]
 
-    table_names = {
-        "importaciones": "temporal_impo",
-        "impo": "temporal_impo",
-        "exportaciones": "temporal_expo",
-        "expo": "temporal_expo"
-    }
-    table_name = table_names.get(file_type.lower(), f"temporal_{file_type.lower()}")
-    logger.info(f"Encontrados {len(zip_files)} archivos ZIP para procesar en '{source_dir}' -> Tabla MySQL: '{table_name}'.")
+    total_zips = len(zip_files)
+    logger.info(f"Encontrados {total_zips} archivos ZIP para procesar en '{source_dir}' -> Tabla MySQL: '{table_name}'.")
 
     # Asegurar índice sobre archivo_origen (usado en el borrado por idempotencia) para tablas ya existentes
     db_manager.ensure_index(table_name)
 
-    for zip_path in zip_files:
+    for idx, zip_path in enumerate(zip_files, start=1):
         filename = os.path.basename(zip_path)
-        logger.info(f"=== Iniciando procesamiento (streaming): {filename} ===")
+        logger.info(f"=== [{idx}/{total_zips}] Iniciando procesamiento (streaming): {filename} ===")
 
         try:
             with zipfile.ZipFile(zip_path, "r") as z:
@@ -508,7 +556,10 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
             if os.path.exists(target_path):
                 os.remove(target_path)
             shutil.move(zip_path, target_path)
-            logger.info(f"¡Éxito! Archivo {filename} procesado ({rows_inserted} filas) y movido a '{target_processed_dir}'.\n")
+            logger.info(
+                f"¡Éxito! [{idx}/{total_zips}] Archivo {filename} procesado ({rows_inserted} filas) y movido a "
+                f"'{target_processed_dir}'. Faltan {total_zips - idx}.\n"
+            )
 
         except Exception as e:
             logger.error(f"Error procesando el archivo '{filename}': {e}", exc_info=True)
