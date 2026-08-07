@@ -20,7 +20,9 @@ EXPO_DIR = os.path.expanduser(os.getenv("EXPO_DIR", "Descargas Expo"))
 PROCESADOS_IMPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_IMPO_DIR", "Procesados/Importacion"))
 PROCESADOS_EXPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_EXPO_DIR", "Procesados/Exportacion"))
 RUN_INTERVAL_DAYS = int(os.getenv("RUN_INTERVAL_DAYS", "15"))
-REQUESTS_TIMEOUT = int(os.getenv("REQUESTS_TIMEOUT", "120"))
+REQUESTS_CONNECT_TIMEOUT = int(os.getenv("REQUESTS_CONNECT_TIMEOUT", "5"))
+REQUESTS_READ_TIMEOUT = int(os.getenv("REQUESTS_READ_TIMEOUT", "15"))
+REQUESTS_TIMEOUT = (REQUESTS_CONNECT_TIMEOUT, REQUESTS_READ_TIMEOUT)
 LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
 
 if hasattr(sys.stdout, "reconfigure"):
