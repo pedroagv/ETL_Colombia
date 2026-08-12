@@ -36,8 +36,6 @@ load_dotenv()
 # Configuración de Rutas y Variables
 IMPO_DIR = os.path.expanduser(os.getenv("IMPO_DIR", "Descargas/Importacion"))
 EXPO_DIR = os.path.expanduser(os.getenv("EXPO_DIR", "Descargas/Exportacion"))
-PROCESADOS_IMPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_IMPO_DIR", "Procesados/Importacion"))
-PROCESADOS_EXPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_EXPO_DIR", "Procesados/Exportacion"))
 
 # Configuración de MySQL
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
@@ -492,7 +490,7 @@ def parse_filename_metadata(filename: str) -> tuple:
     return None, None
 
 
-def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str, db_manager: MySQLManager, limit_files=None, batch_size=5000):
+def process_zip_files(file_type: str, source_dir: str, db_manager: MySQLManager, limit_files=None, batch_size=5000):
     """
     Procesa todos los archivos ZIP contenidos en el directorio especificado,
     leyendo y cargando cada uno en bloques (streaming) hacia MySQL.
@@ -511,8 +509,6 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
     if not os.path.exists(source_dir):
         logger.info(f"Directorio de origen '{source_dir}' no existe. Omitiendo.")
         return
-
-    os.makedirs(target_processed_dir, exist_ok=True)
 
     zip_files = sorted(glob.glob(os.path.join(source_dir, "*.zip")))
     if not zip_files:
@@ -551,15 +547,17 @@ def process_zip_files(file_type: str, source_dir: str, target_processed_dir: str
             if rows_inserted == 0:
                 logger.warning(f"El archivo {filename} no contenía filas de datos.")
 
-            # Mover archivo a la carpeta de procesados al finalizar con éxito
-            target_path = os.path.join(target_processed_dir, filename)
-            if os.path.exists(target_path):
-                os.remove(target_path)
-            shutil.move(zip_path, target_path)
-            logger.info(
-                f"¡Éxito! [{idx}/{total_zips}] Archivo {filename} procesado ({rows_inserted} filas) y movido a "
-                f"'{target_processed_dir}'. Faltan {total_zips - idx}.\n"
-            )
+            # Ya cargado en MySQL (tabla temporal): el ZIP no se vuelve a necesitar.
+            # Se intenta eliminar para liberar espacio; si falla, no se detiene el
+            # proceso (el archivo quedará pendiente de limpieza manual más tarde).
+            try:
+                os.remove(zip_path)
+                logger.info(
+                    f"¡Éxito! [{idx}/{total_zips}] Archivo {filename} procesado ({rows_inserted} filas) y "
+                    f"eliminado tras la carga. Faltan {total_zips - idx}.\n"
+                )
+            except OSError as e:
+                logger.warning(f"Archivo {filename} procesado ({rows_inserted} filas) pero no se pudo eliminar: {e}")
 
         except Exception as e:
             logger.error(f"Error procesando el archivo '{filename}': {e}", exc_info=True)
@@ -580,7 +578,6 @@ def main():
         process_zip_files(
             file_type="importaciones",
             source_dir=IMPO_DIR,
-            target_processed_dir=PROCESADOS_IMPO_DIR,
             db_manager=db_manager,
             limit_files=args.limit_files,
             batch_size=args.batch_size
@@ -591,7 +588,6 @@ def main():
         process_zip_files(
             file_type="exportaciones",
             source_dir=EXPO_DIR,
-            target_processed_dir=PROCESADOS_EXPO_DIR,
             db_manager=db_manager,
             limit_files=args.limit_files,
             batch_size=args.batch_size

@@ -32,8 +32,9 @@ def encolar_importacion(conn, archivo: str) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
             "INSERT INTO `trade_intelligence`.`cola_indexacion` "
-            "(pais, tipo_intercambio, procedimiento_almacenado, archivo, anio, estado) "
-            "VALUES (%s, %s, %s, %s, %s, 'PENDIENTE')",
+            "(pais, tipo_intercambio, procedimiento_almacenado, archivo, anio, estado, "
+            "detalle, fecha, fecha_actualizacion) "
+            "VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', '', NOW(6), NOW(6))",
             ("colombia", "IMPORTACION", PROCEDIMIENTO_IMPORTACION, archivo, anio),
         )
     conn.commit()
@@ -44,8 +45,9 @@ def encolar_exportacion(conn, archivo: str) -> None:
     with conn.cursor() as cursor:
         cursor.execute(
             "INSERT INTO `trade_intelligence`.`cola_indexacion` "
-            "(pais, tipo_intercambio, procedimiento_almacenado, archivo, anio, estado) "
-            "VALUES (%s, %s, %s, %s, %s, 'PENDIENTE')",
+            "(pais, tipo_intercambio, procedimiento_almacenado, archivo, anio, estado, "
+            "detalle, fecha, fecha_actualizacion) "
+            "VALUES (%s, %s, %s, %s, %s, 'PENDIENTE', '', NOW(6), NOW(6))",
             ("colombia", "EXPORTACION", PROCEDIMIENTO_EXPORTACION, archivo, anio),
         )
     conn.commit()

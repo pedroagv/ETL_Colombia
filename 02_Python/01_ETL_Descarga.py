@@ -17,8 +17,6 @@ START_YEAR = int(os.getenv("START_YEAR", "2018"))
 DB_PATH = os.getenv("DB_PATH", "dian_downloads.db")
 IMPO_DIR = os.path.expanduser(os.getenv("IMPO_DIR", "Descargas Impo"))
 EXPO_DIR = os.path.expanduser(os.getenv("EXPO_DIR", "Descargas Expo"))
-PROCESADOS_IMPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_IMPO_DIR", "Procesados/Importacion"))
-PROCESADOS_EXPO_DIR = os.path.expanduser(os.getenv("PROCESADOS_EXPO_DIR", "Procesados/Exportacion"))
 RUN_INTERVAL_DAYS = int(os.getenv("RUN_INTERVAL_DAYS", "15"))
 REQUESTS_CONNECT_TIMEOUT = int(os.getenv("REQUESTS_CONNECT_TIMEOUT", "5"))
 REQUESTS_READ_TIMEOUT = int(os.getenv("REQUESTS_READ_TIMEOUT", "15"))
@@ -161,14 +159,12 @@ def run_download_process(limit_months=None):
             "key": "importaciones",
             "cap": "Importaciones",
             "dir": IMPO_DIR,
-            "processed_dir": PROCESADOS_IMPO_DIR,
             "url_pattern": "https://www.dian.gov.co/dian/cifras/Basesestadisticasimportaciones/{month_num}_Importaciones_{year}_{month_name}.zip"
         },
         {
             "key": "exportaciones",
             "cap": "Exportaciones",
             "dir": EXPO_DIR,
-            "processed_dir": PROCESADOS_EXPO_DIR,
             "url_pattern": "https://www.dian.gov.co/dian/cifras/Basesestadisticasexportaciones/{month_num}_Exportaciones_{year}_{month_name}.zip"
         }
     ]
@@ -182,17 +178,15 @@ def run_download_process(limit_months=None):
             )
             filename = f"{month_num}_{dt['cap']}_{year}_{month_name}.zip"
             dest_path = os.path.join(dt["dir"], filename)
-            processed_path = os.path.join(dt["processed_dir"], filename)
 
-            # Verificar si ya se encuentra en la base de datos de descargas exitosas
+            # Verificar si ya se encuentra en la base de datos de descargas exitosas.
+            # La Fase 2 elimina el ZIP tras cargarlo en MySQL, así que ya no hay
+            # evidencia física que validar una vez procesado: se confía en el
+            # registro SQLite (única fuente de verdad de "ya descargado").
             if db.is_already_downloaded(url):
-                # Validamos que el archivo físico exista, ya sea pendiente de procesar o ya movido a Procesados
-                if os.path.exists(dest_path) or os.path.exists(processed_path):
-                    logger.debug(f"Omitido: {filename} ya descargado y verificado.")
-                    summary["skipped"].append((dt["key"], year, month_name, filename))
-                    continue
-                else:
-                    logger.warning(f"El archivo {filename} figura como descargado pero no se encuentra. Reintentando descarga...")
+                logger.debug(f"Omitido: {filename} ya descargado previamente.")
+                summary["skipped"].append((dt["key"], year, month_name, filename))
+                continue
             
             logger.info(f"Procesando {dt['cap']} - {month_name} {year}...")
             

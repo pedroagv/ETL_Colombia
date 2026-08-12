@@ -70,7 +70,7 @@ El pipeline está diseñado para ejecutarse **archivo por archivo** (evitando sa
 ### **Fase 2: Streaming a Tablas Temporales Staging (`02_ETL_SQL.py`)**
 - Procesa en streaming por bloques (`chunksize=5000`) cada archivo Excel `.xlsx` contenido en el ZIP.
 - Crea e inserta las filas crudas en `colombia.temporal_impo` o `colombia.temporal_expo`.
-- Una vez insertado en staging, mueve el archivo ZIP a la carpeta `Procesados/`.
+- Una vez insertado en staging, elimina el archivo ZIP local para liberar espacio (el registro de descarga en SQLite evita reprocesarlo).
 
 ### **Fase 3: Población de Dimensiones Compartidas (`03_ETL_Dimensiones.py`)**
 - Extrae dinámicamente los valores únicos de cada atributo (`INSERT IGNORE ... SELECT DISTINCT`).
