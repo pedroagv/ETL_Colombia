@@ -190,7 +190,7 @@ def _asegurar_tabla_exportacion(conn):
       `ciudad_destinatario`         VARCHAR(150) NULL,
       `aduana_despacho`             VARCHAR(150) NULL,
       `aduana_salida`               VARCHAR(150) NULL,
-      `exportador`                  VARCHAR(255) NULL,
+      `exportador`                  VARCHAR(500) NULL,
       `nit_exportador`              VARCHAR(20) NULL,
       `destinatario`                VARCHAR(255) NULL,
       `agente_aduanero`             VARCHAR(255) NULL,
